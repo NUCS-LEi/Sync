@@ -1,0 +1,63 @@
+package org.synclibrary.schema;
+
+public class Column {
+	private String column_name;
+	private String column_default;
+	private String notnull;
+	private String data_type;
+	private String column_key;
+
+	public Column() {
+		super();
+	}
+
+	public Column(String columnName, String columnDefault, String notNull, String dataType, String columnKey) {
+		super();
+		column_name = columnName;
+		column_default = columnDefault;
+		notnull = notNull;
+		data_type = dataType;
+		column_key = columnKey;
+	}
+
+	public String getColumn_name() {
+		return column_name;
+	}
+
+	public void setColumn_name(String columnName) {
+		column_name = columnName;
+	}
+
+	public String getColumn_default() {
+		return column_default;
+	}
+
+	public void setColumn_default(String columnDefault) {
+		column_default = columnDefault;
+	}
+
+	public String getNotnull() {
+		return notnull;
+	}
+
+	public void setNotnull(String notnull) {
+		this.notnull = notnull;
+	}
+
+	public String getData_type() {
+		return data_type;
+	}
+
+	public void setData_type(String dataType) {
+		data_type = dataType;
+	}
+
+	public String getColumn_key() {
+		return column_key;
+	}
+
+	public void setColumn_key(String columnKey) {
+		column_key = columnKey;
+	}
+
+}

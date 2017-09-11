@@ -1,0 +1,383 @@
+package edu.mit.android.cityver1.statdb.sync;
+
+import java.io.BufferedReader;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLConnection;
+import java.net.URLEncoder;
+import java.text.ParseException;
+import java.util.ArrayList;
+
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+import android.telephony.TelephonyManager;
+import edu.mit.android.cityver1.helper.FileHelper;
+import edu.mit.android.cityver1.helper.Util;
+import edu.mit.android.cityver1.statdb.DatabaseDictionary;
+import edu.mit.android.cityver1.statdb.InternalDBQueryAPI;
+import edu.mit.android.cityver1.statdb.logger.LoggerDatabase;
+import edu.mit.android.cityver1.util.CITYException;
+
+public class SyncDatabase_0 {
+	private static final String TAG = "SyncStatDB";
+	private static String SYNC_URL = "http://cityproject.media.mit.edu/sync/sync_table.php";
+	private static String SYNC_DONE_URL = "http://cityproject.media.mit.edu/sync/sync_done.php";
+	private static String SYNC_RESET_URL = "http://cityproject.media.mit.edu/sync/sync_reset.php";
+	private static String INTERNAL_NON_INITIAL_SYNC_FLAGFILE = "NON_INITIAL_SYNC_FLAG";
+	private static String EXTERNAL_NON_INITIAL_SYNC_FLAGFILE = ".city/NON_INITIAL_SYNC_FLAG";
+	public static boolean inSyncing = false;
+
+	public static void sync_database(Context context) {
+		TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+		if (!FileHelper.internalFileExists(context, INTERNAL_NON_INITIAL_SYNC_FLAGFILE)) {
+			// if (FileHelper.fileExists(EXTERNAL_NON_INITIAL_SYNC_FLAGFILE)) {
+			// FileHelper.writeToInternalFile(context,
+			// EXTERNAL_NON_INITIAL_SYNC_FLAGFILE,
+			// INTERNAL_NON_INITIAL_SYNC_FLAGFILE, false);
+			android.util.Log.i(TAG, "INTERNAL_NON_INITIAL_SYNC_FLAGFILE not exist");
+			if (FileHelper.fileExists(DatabaseDictionary.externalDBPathFile)) {
+				LoggerDatabase.importLogStatDB(context);
+				android.util.Log.i(TAG, "External database imported");
+			} else {
+				String response = null;
+				try {
+					response = Util.convertStreamToString(sync_transit(SYNC_RESET_URL, new String[][] { { "phoneID",
+							tm.getDeviceId() } }));
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+				if (response == null || !response.equals("reset")) {
+					android.util.Log.i(TAG, "Last_Sync_Time on server reset failed");
+					return;
+				}
+				android.util.Log.i(TAG, "Last_Sync_Time on server reset success");
+			}
+		}
+		SQLiteOpenHelper helper = new SQLiteOpenHelper(context, DatabaseDictionary.STAT_DATABASE_NAME, null,
+				DatabaseDictionary.DATABASE_VERSION) {
+			@Override
+			public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+			}
+
+			@Override
+			public void onCreate(SQLiteDatabase db) {
+			}
+		};
+		SQLiteDatabase db = helper.getWritableDatabase();
+		// Sync
+		// try {
+		inSyncing = true;
+		for (String table : DatabaseDictionary.SyncTables) {
+			LoggerDatabase.createTable(db, table);
+			syncTable(context, db, table, tm.getDeviceId());
+		}
+
+		// } catch (Exception e) {
+		// android.util.Log.i(TAG, e.toString());
+		// } finally {
+		db.close();
+		inSyncing = false;
+		// }
+		LoggerDatabase.exportLogStatDB();
+		try {
+			FileHelper.appendToInternalFile(context, "1", INTERNAL_NON_INITIAL_SYNC_FLAGFILE,
+					INTERNAL_NON_INITIAL_SYNC_FLAGFILE);
+			// FileHelper.appendToFile("1", EXTERNAL_NON_INITIAL_SYNC_FLAGFILE,
+			// EXTERNAL_NON_INITIAL_SYNC_FLAGFILE);
+		} catch (CITYException e) {
+			e.printStackTrace();
+		}
+	}
+
+	public static String testTransit(Context context) {
+		SQLiteOpenHelper helper = new SQLiteOpenHelper(context, DatabaseDictionary.STAT_DATABASE_NAME, null,
+				DatabaseDictionary.DATABASE_VERSION) {
+			@Override
+			public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+			}
+
+			@Override
+			public void onCreate(SQLiteDatabase db) {
+			}
+		};
+		SQLiteDatabase db = helper.getWritableDatabase();
+		TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+		String lastSyncTime = getLastSyncTime(context, db, tm.getDeviceId(), "stats");
+		String syncData = prepareTableSyncData(context, db, "stats", tm.getDeviceId(), lastSyncTime);
+		db.close();
+		String returnStr = null;
+		try {
+			returnStr = Util.convertStreamToString(sync_transit(SYNC_URL, new String[][] { { "tablename", "stats" },
+					{ "phoneID", tm.getDeviceId() }, { "upsyncstring", syncData } }));
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return returnStr;
+	}
+
+	private static String getLastSyncTime(Context context, SQLiteDatabase db, String phoneID, String tableName) {
+		// Check if table is exist, if not create it
+		if (!InternalDBQueryAPI.isTableExist(context, DatabaseDictionary.SYNC_TIME_TABLE))
+			LoggerDatabase.createTable(db, DatabaseDictionary.SYNC_TIME_TABLE);
+
+		String sql = "select LastSyncTime from " + DatabaseDictionary.SYNC_TIME_TABLE + " where PhoneID='" + phoneID
+				+ "' and TableName='" + tableName + "'";
+		Cursor cur = db.rawQuery(sql, null);
+		String lastSyncTime = null;
+		cur.moveToFirst();
+		while (!cur.isAfterLast()) {
+			lastSyncTime = cur.getString(0);
+			cur.moveToNext();
+		}
+		cur.close();
+		android.util.Log.i(TAG, "get LastSyncTime for table[" + tableName + "]: " + lastSyncTime);
+		return lastSyncTime;
+	}
+
+	private static void syncTable(Context context, SQLiteDatabase db, String tableName, String phoneID) {
+		String lastSyncTime = getLastSyncTime(context, db, phoneID, tableName);
+		String upsyncstring = prepareTableSyncData(context, db, tableName, phoneID, lastSyncTime);
+		InputStream downsyncstream = sync_transit(SYNC_URL, new String[][] { { "tablename", tableName },
+				{ "phoneID", phoneID }, { "upsyncstring", upsyncstring } });
+		if (downsyncstream != null && !downsyncstream.equals("")) {
+			android.util.Log.i(TAG, "DownSyncing " + tableName);
+			char[] buffer = new char[8192];
+			String blockString = "";
+			String tailString = "";
+			String[][] downSyncArray;
+			int k = 0;
+			try {
+				Reader reader;
+				reader = new BufferedReader(new InputStreamReader(downsyncstream, "UTF-8"));
+				int n;
+				while ((n = reader.read(buffer)) != -1) {
+					blockString = tailString + String.copyValueOf(buffer);
+					tailString = blockString.substring(blockString.lastIndexOf(DatabaseDictionary.ROW_SPLIT)
+							+ DatabaseDictionary.ROW_SPLIT.length());
+					if (n == 8192)
+						blockString = blockString.substring(0, blockString.lastIndexOf(DatabaseDictionary.ROW_SPLIT));
+					downSyncArray = parseSyncDataFromServer(blockString);
+					for (int i = 0; i < downSyncArray.length; i++) {
+						if (k % 100 == 0)
+							android.util.Log.i(TAG, "[" + tableName + "]->record:" + (k + 1));
+						k++;
+						putRecord(db, tableName, downSyncArray[i], null);
+					}
+				}
+				downsyncstream.close();
+			} catch (UnsupportedEncodingException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+		String newLastSyncTime;
+		try {
+			newLastSyncTime = Util.convertStreamToString(sync_transit(SYNC_DONE_URL, new String[][] {
+					{ "phoneID", phoneID }, { "tableName", tableName } }));
+			if (newLastSyncTime != null && !newLastSyncTime.equals("")) {
+				putLastSyncTime(db, phoneID, tableName, newLastSyncTime);
+				android.util.Log.i(TAG, "Update SyncTime [" + tableName + "]: " + newLastSyncTime);
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+	}
+
+	private static String prepareTableSyncData(Context context, SQLiteDatabase db, String tableName, String phoneID,
+			String lastSyncTime) {
+		if (!InternalDBQueryAPI.isTableExist(context, DatabaseDictionary.SYNC_TIME_TABLE))
+			LoggerDatabase.createTable(db, DatabaseDictionary.SYNC_TIME_TABLE);
+		String sql;
+		if (lastSyncTime == null)
+			sql = "select * from " + tableName;
+		else
+			sql = "select * from " + tableName + " where datetime(LastModDate,'localtime')>datetime('" + lastSyncTime
+					+ "','localtime')";
+		Cursor cur = db.rawQuery(sql, null);
+		ArrayList<String[]> result = new ArrayList<String[]>();
+		cur.moveToFirst();
+		while (!cur.isAfterLast()) {
+			String[] s = new String[cur.getColumnCount()];
+			for (int i = 0; i < cur.getColumnCount(); i++)
+				s[i] = cur.getString(i);
+			result.add(s);
+			cur.moveToNext();
+		}
+		cur.close();
+		String syncData = "";
+		for (String[] str : result) {
+			for (String _str : str)
+				syncData += _str + DatabaseDictionary.COL_SPLIT;
+			syncData = syncData.substring(0, syncData.length() - DatabaseDictionary.COL_SPLIT.length());
+			syncData += DatabaseDictionary.ROW_SPLIT;
+		}
+		if (!syncData.equals(""))
+			syncData = syncData.substring(0, syncData.length() - DatabaseDictionary.ROW_SPLIT.length());
+		android.util.Log.i(TAG, "prepare SyncData for server");
+		return syncData;
+	}
+
+	private static String[][] parseSyncDataFromServer(String db) {
+		String[] rows = db.split(DatabaseDictionary.ROW_SPLIT, -1);
+		db = null;
+		String[] cols = null;
+		if (rows.length == 0)
+			return null;
+		cols = rows[0].split(DatabaseDictionary.COL_SPLIT, -1);
+		if (cols.length == 0)
+			return null;
+		String[][] parsedDB = new String[rows.length][cols.length];
+			for (int i = 0; i < rows.length; i++) {
+				cols = rows[i].split(DatabaseDictionary.COL_SPLIT, -1);
+				for (int j = 0; j < cols.length; j++) {
+					parsedDB[i][j] = cols[j];
+				}
+			}
+		rows = null;
+		// android.util.Log.i(TAG, "SyncData from server parsed");
+		return parsedDB;
+	}
+
+	private static void putLastSyncTime(SQLiteDatabase db, String phoneID, String tableName, String lastSyncTime) {
+		String insertSQL = "insert or replace into " + DatabaseDictionary.SYNC_TIME_TABLE + " values('" + phoneID
+				+ "','" + tableName + "','" + lastSyncTime + "');";
+		db.execSQL(insertSQL);
+	}
+
+	private static void putRecord(SQLiteDatabase db, String tableName, String[] record, int dateCol[]) {
+		String values = "";
+		if (record == null)
+			return;
+		for (int j = 0; j < record.length; j++) {
+				record[j] = record[j].replace("'", "''");
+			if (dateCol != null) {
+				for (int k : dateCol) {
+					if (j == k && record[j] != null && !record[j].equals("")) {
+						try {
+							record[j] = DatabaseDictionary.normalDateFormat.format(DatabaseDictionary.priorDateFormat
+									.parse(record[j]));
+						} catch (ParseException e) {
+
+						}
+					}
+				}
+			}
+			values += "'" + record[j] + "'";
+			if (j != record.length - 1)
+				values += ",";
+		}
+		String insertSQL = "insert or replace into " + tableName + " values(" + values + ");";
+		db.execSQL(insertSQL);
+	}
+
+	private static InputStream sync_transit(String service_url, String[][] params) {
+		String service = service_url;
+		InputStream is = null;
+		try {
+			URL url = new URL(service);
+			URLConnection connection;
+			connection = url.openConnection();
+			HttpURLConnection httpConnection = (HttpURLConnection) connection;
+
+			// Set timeout for HttpURLConnection, otherwise the App will wait
+			// until
+			// App crash.
+			httpConnection.setConnectTimeout(8000);
+			httpConnection.setReadTimeout(8000);
+
+			// To accept character like & and %, HttpURLConnection should use
+			// POST method to pass parameters
+			// Setup POST method properties
+			httpConnection.setDoInput(true);
+			httpConnection.setDoOutput(true);
+			httpConnection.setRequestMethod("POST");
+			httpConnection.setUseCaches(false);
+			httpConnection.setInstanceFollowRedirects(true);
+			httpConnection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+
+			// Setup POST parameters and post them
+			DataOutputStream out = new DataOutputStream(httpConnection.getOutputStream());
+			String content = "";
+			for (String[] param : params)
+				content += param[0] + "=" + URLEncoder.encode(param[1], "utf-8") + "&";
+			content = content.substring(0, content.length() - 1);
+			out.writeBytes(content);
+			out.flush();
+			out.close();
+
+			int responseCode = httpConnection.getResponseCode();
+			if (responseCode == HttpURLConnection.HTTP_OK) {
+				is = httpConnection.getInputStream();
+			}
+		} catch (MalformedURLException e) {
+			e.printStackTrace();
+			return is;
+		} catch (IOException e) {
+			e.printStackTrace();
+			return is;
+		}
+		return is;
+	}
+
+	// private static void insertRecord(SQLiteDatabase db, String tableName,
+	// String[] record, int dateCol[]) {
+	// String values = "";
+	// for (int j = 0; j < record.length; j++) {
+	// record[j] = record[j].replace("'", "''");
+	// for (int k : dateCol) {
+	// if (j == k && record[j] != null && !record[j].equals("")) {
+	// try {
+	// record[j] =
+	// DatabaseDictionary.normalDateFormat.format(DatabaseDictionary.priorDateFormat
+	// .parse(record[j]));
+	// } catch (ParseException e) {
+	//
+	// }
+	// }
+	// }
+	// values += "'" + record[j] + "'";
+	// if (j != record.length - 1)
+	// values += ",";
+	// }
+	// String insertSQL = "insert into " + tableName + " values(" + values +
+	// ");";
+	// db.execSQL(insertSQL);
+	// }
+	//
+	// private static void updateRecord(SQLiteDatabase db, String tableName,
+	// String[] columns, String[] record,
+	// int dateCol[], String whereStatement) {
+	// String values = "";
+	// for (int j = 0; j < columns.length; j++) {
+	// record[j] = record[j].replace("'", "''");
+	// for (int k : dateCol) {
+	// if (j == k && record[j] != null && !record[j].equals("")) {
+	// try {
+	// record[j] =
+	// DatabaseDictionary.normalDateFormat.format(DatabaseDictionary.priorDateFormat
+	// .parse(record[j]));
+	// } catch (ParseException e) {
+	//
+	// }
+	// }
+	// }
+	// values += columns[j] + "='" + record[j] + "'";
+	// if (j != columns.length - 1)
+	// values += ",";
+	// }
+	// String insertSQL = "update " + tableName + " set " + values +
+	// whereStatement + ";";
+	// db.execSQL(insertSQL);
+	// }
+}

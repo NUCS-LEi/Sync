@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 95
+/r/mobilehealth/!svn/ver/1601/Trunk/CITYVer1/Project/src/edu/mit/android/cityver1/statdb/schema
+END
+Table.java
+K 25
+svn:wc:ra_dav:version-url
+V 106
+/r/mobilehealth/!svn/ver/1601/Trunk/CITYVer1/Project/src/edu/mit/android/cityver1/statdb/schema/Table.java
+END
+Column.java
+K 25
+svn:wc:ra_dav:version-url
+V 107
+/r/mobilehealth/!svn/ver/1601/Trunk/CITYVer1/Project/src/edu/mit/android/cityver1/statdb/schema/Column.java
+END
+SyncSchema.java
+K 25
+svn:wc:ra_dav:version-url
+V 111
+/r/mobilehealth/!svn/ver/1601/Trunk/CITYVer1/Project/src/edu/mit/android/cityver1/statdb/schema/SyncSchema.java
+END
